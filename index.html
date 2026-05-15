@@ -1,0 +1,1472 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gerenciamento Ali Flex</title>
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700&family=Fraunces:ital,wght@0,400;0,600;0,700;1,400&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+<!-- Firebase SDK via CDN (modular) -->
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import {
+  getFirestore, doc, getDoc, setDoc, updateDoc,
+  onSnapshot, arrayUnion, arrayRemove, serverTimestamp
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyDsNGKE1mMAc8-6g-jUZG_2QAf9uioyqx0",
+  authDomain: "calend-ca9e0.firebaseapp.com",
+  projectId: "calend-ca9e0",
+  storageBucket: "calend-ca9e0.firebasestorage.app",
+  messagingSenderId: "1077010914412",
+  appId: "1:1077010914412:web:5d50af6702ad82b7458c49"
+};
+
+const app = initializeApp(firebaseConfig);
+const db  = getFirestore(app);
+
+const DOC_PEDIDOS   = doc(db, "alivflex", "pedidos");
+const DOC_NOTAS     = doc(db, "alivflex", "notas");
+const DOC_CHECKLIST = doc(db, "alivflex", "checklist");
+
+let pedidos   = [];
+let notas     = {};
+let checklist = {};
+
+function setStatus(state) {
+  const el  = document.getElementById('fb-status');
+  const dot = document.getElementById('fb-dot');
+  const map = {
+    conectando:   { text: 'Conectando…',     color: '#f59e0b', anim: true  },
+    sincronizado: { text: 'Sincronizado ✓',  color: '#22c55e', anim: false },
+    erro:         { text: 'Sem conexão',      color: '#ef4444', anim: false },
+  };
+  const s = map[state] || map.conectando;
+  if (el)  el.textContent = s.text;
+  if (dot) { dot.style.background = s.color; dot.style.animation = s.anim ? 'pulse 1.2s infinite' : 'none'; }
+}
+
+async function salvarPedido(pedido) {
+  try {
+    setStatus('conectando');
+    const snap = await getDoc(DOC_PEDIDOS);
+    if (!snap.exists()) { await setDoc(DOC_PEDIDOS, { lista: [pedido] }); }
+    else                { await updateDoc(DOC_PEDIDOS, { lista: arrayUnion(pedido) }); }
+    localStorage.setItem('alivflex_pedidos_cache', JSON.stringify([...pedidos, pedido]));
+    setStatus('sincronizado');
+    mostrarToast('Pedido salvo! ✓', 'green');
+  } catch(e) { console.error(e); setStatus('erro'); mostrarToast('Erro ao salvar. Verifique a conexão.', 'red'); }
+}
+
+async function deletarPedido(pedido) {
+  try {
+    setStatus('conectando');
+    await updateDoc(DOC_PEDIDOS, { lista: arrayRemove(pedido) });
+    setStatus('sincronizado');
+    mostrarToast('Pedido removido.', 'blue');
+  } catch(e) { console.error(e); setStatus('erro'); }
+}
+
+function sincronizarPedidos() {
+  onSnapshot(DOC_PEDIDOS, (snap) => {
+    pedidos = snap.exists() ? (snap.data().lista || []) : [];
+    localStorage.setItem('alivflex_pedidos_cache', JSON.stringify(pedidos));
+    renderPedidos();
+    setStatus('sincronizado');
+  }, (err) => {
+    console.error(err); setStatus('erro');
+    const cache = localStorage.getItem('alivflex_pedidos_cache');
+    if (cache) { pedidos = JSON.parse(cache); renderPedidos(); }
+  });
+}
+
+let notasDebounce = null;
+async function salvarNotas(chave, valor) {
+  clearTimeout(notasDebounce);
+  notasDebounce = setTimeout(async () => {
+    try {
+      const snap = await getDoc(DOC_NOTAS);
+      const update = { [chave]: valor };
+      if (!snap.exists()) { await setDoc(DOC_NOTAS, update); }
+      else                { await updateDoc(DOC_NOTAS, update); }
+      localStorage.setItem('alivflex_notas_cache', JSON.stringify({...notas, [chave]: valor}));
+      setStatus('sincronizado');
+    } catch(e) { setStatus('erro'); }
+  }, 800);
+}
+
+function sincronizarNotas() {
+  onSnapshot(DOC_NOTAS, (snap) => {
+    if (snap.exists()) {
+      notas = snap.data();
+      localStorage.setItem('alivflex_notas_cache', JSON.stringify(notas));
+    }
+    document.querySelectorAll('[data-nota-key]').forEach(el => {
+      if (document.activeElement !== el) el.value = notas[el.dataset.notaKey] || '';
+    });
+    setStatus('sincronizado');
+  }, () => {
+    setStatus('erro');
+    const cache = localStorage.getItem('alivflex_notas_cache');
+    if (cache) notas = JSON.parse(cache);
+  });
+}
+
+async function toggleChecklistItem(key) {
+  try {
+    const atual  = checklist[key] || false;
+    const novo   = !atual;
+    const snap   = await getDoc(DOC_CHECKLIST);
+    const update = { [key]: novo };
+    if (!snap.exists()) { await setDoc(DOC_CHECKLIST, update); }
+    else                { await updateDoc(DOC_CHECKLIST, update); }
+    checklist[key] = novo;
+    localStorage.setItem('alivflex_checklist_cache', JSON.stringify(checklist));
+    setStatus('sincronizado');
+  } catch(e) { setStatus('erro'); }
+}
+
+function sincronizarChecklist() {
+  onSnapshot(DOC_CHECKLIST, (snap) => {
+    if (snap.exists()) {
+      checklist = snap.data();
+      localStorage.setItem('alivflex_checklist_cache', JSON.stringify(checklist));
+    }
+    renderChecklist();
+    setStatus('sincronizado');
+  }, () => {
+    setStatus('erro');
+    const cache = localStorage.getItem('alivflex_checklist_cache');
+    if (cache) { checklist = JSON.parse(cache); renderChecklist(); }
+  });
+}
+
+function renderPedidos() {
+  const container = document.getElementById('lista-pedidos');
+  if (!container) return;
+  if (pedidos.length === 0) {
+    container.innerHTML = `<div class="empty-state">Nenhum pedido registrado ainda.</div>`;
+    return;
+  }
+  const sorted = [...pedidos].sort((a, b) => new Date(b.criadoEm||0) - new Date(a.criadoEm||0));
+  container.innerHTML = sorted.map((p, i) => `
+    <div class="pedido-card" data-idx="${i}">
+      <div class="pedido-header">
+        <div class="pedido-info">
+          <span class="pedido-nome">${p.nome || '—'}</span>
+          <span class="pedido-kit kit-badge">${p.kit || '—'}</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <span class="pedido-data">${p.criadoEm ? new Date(p.criadoEm).toLocaleDateString('pt-BR') : ''}</span>
+          <button class="btn-del" onclick="window._deletarPedidoUI(${i})" title="Remover">✕</button>
+        </div>
+      </div>
+      <div class="pedido-detalhes">
+        <span>📱 ${p.whats||'—'}</span>
+        <span>🪪 ${p.cpf||'—'}</span>
+        <span>📍 ${p.cidade||'—'}</span>
+        <span>💳 ${p.pgto||'—'}</span>
+      </div>
+      ${p.endereco ? `<div class="pedido-end">📦 ${p.endereco}${p.num?', '+p.num:''} — ${p.bairro||''} — CEP: ${p.cep||''}</div>` : ''}
+    </div>
+  `).join('');
+}
+
+const CHECKLIST_ITEMS = [
+  { key: 'c1', label: 'Primeiro contato realizado — cliente interessado' },
+  { key: 'c2', label: 'Produto apresentado (benefícios e composição)' },
+  { key: 'c3', label: 'Composição / ingredientes explicados' },
+  { key: 'c4', label: 'Tabela de kits e preços enviada' },
+  { key: 'c5', label: 'Kit escolhido pelo cliente' },
+  { key: 'c6', label: 'Dados pessoais coletados (nome + CPF)' },
+  { key: 'c7', label: 'Endereço completo coletado' },
+  { key: 'c8', label: 'Pedido confirmado e registrado' },
+  { key: 'c9', label: 'Mensagem de encerramento / pós-venda enviada' },
+];
+
+function renderChecklist() {
+  const container = document.getElementById('checklist-items');
+  if (!container) return;
+  container.innerHTML = CHECKLIST_ITEMS.map(item => {
+    const done = checklist[item.key] || false;
+    return `
+      <li class="check-item ${done ? 'done' : ''}" onclick="window._toggleCheck('${item.key}')">
+        <div class="check-box ${done ? 'checked' : ''}">
+          ${done ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 13l4 4L19 7"/></svg>` : ''}
+        </div>
+        <span>${item.label}</span>
+      </li>`;
+  }).join('');
+}
+
+window._toggleCheck = async (key) => { await toggleChecklistItem(key); renderChecklist(); };
+window._deletarPedidoUI = async (idx) => {
+  const sorted = [...pedidos].sort((a, b) => new Date(b.criadoEm||0) - new Date(a.criadoEm||0));
+  const pedido = sorted[idx];
+  if (!pedido) return;
+  if (!confirm(`Remover pedido de ${pedido.nome}?`)) return;
+  await deletarPedido(pedido);
+};
+window._salvarNota = (key, valor) => salvarNotas(key, valor);
+window._registrarPedido = async () => {
+  const g = id => document.getElementById(id)?.value?.trim() || '';
+  const pedido = {
+    nome: g('p-nome'), cpf: g('p-cpf'), whats: g('p-whats'),
+    cep: g('p-cep'), endereco: g('p-end'), num: g('p-num'),
+    bairro: g('p-bairro'), cidade: g('p-cidade'),
+    kit: g('p-kit'), pgto: g('p-pgto'),
+    criadoEm: new Date().toISOString(),
+  };
+  if (!pedido.nome || !pedido.kit) { mostrarToast('Preencha nome e kit!', 'red'); return; }
+  await salvarPedido(pedido);
+  ['p-nome','p-cpf','p-whats','p-cep','p-end','p-num','p-bairro','p-cidade','p-kit','p-pgto']
+    .forEach(id => { const el = document.getElementById(id); if(el) el.value = ''; });
+  showTab('pedidos');
+};
+
+document.addEventListener('DOMContentLoaded', () => {
+  setStatus('conectando');
+  sincronizarPedidos();
+  sincronizarNotas();
+  sincronizarChecklist();
+  renderChecklist();
+});
+</script>
+
+<style>
+:root {
+  --navy:        #030d1f;
+  --navy-2:      #071428;
+  --navy-card:   #0c1e3c;
+  --navy-card2:  #102448;
+  --navy-border: rgba(56,113,220,0.18);
+  --navy-soft:   rgba(56,113,220,0.07);
+  --blue:        #3875dc;
+  --blue-light:  #5a93f0;
+  --blue-glow:   rgba(56,113,220,0.22);
+  --cyan:        #22d3ee;
+  --gold:        #f5c842;
+  --gold-soft:   rgba(245,200,66,0.10);
+  --green:       #22c55e;
+  --green-soft:  rgba(34,197,94,0.10);
+  --red:         #f87171;
+  --red-soft:    rgba(248,113,113,0.10);
+  --orange:      #fb923c;
+  --purple:      #a78bfa;
+  --purple-soft: rgba(167,139,250,0.10);
+  --text:        #ddeeff;
+  --text-muted:  #6b90c0;
+  --text-dim:    #2d4a72;
+  --radius:      16px;
+  --radius-sm:   10px;
+  --radius-xs:   6px;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: 'Sora', sans-serif; background: var(--navy); color: var(--text); min-height: 100vh; overflow-x: hidden; }
+body::before {
+  content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 0;
+  background-image: linear-gradient(rgba(56,113,220,0.035) 1px, transparent 1px), linear-gradient(90deg, rgba(56,113,220,0.035) 1px, transparent 1px);
+  background-size: 56px 56px;
+}
+.orb { position: fixed; border-radius: 50%; filter: blur(110px); pointer-events: none; z-index: 0; }
+.orb1 { width:700px; height:700px; background:rgba(22,78,190,0.12); top:-300px; right:-200px; }
+.orb2 { width:400px; height:400px; background:rgba(56,113,220,0.08); bottom:0; left:-100px; }
+.app { position:relative; z-index:1; display:flex; min-height:100vh; }
+
+/* ─── Sidebar ─── */
+.sidebar { width:240px; flex-shrink:0; background:var(--navy-2); border-right:1px solid var(--navy-border); display:flex; flex-direction:column; position:fixed; top:0; left:0; bottom:0; z-index:100; }
+.sidebar-brand { padding:28px 20px 20px; border-bottom:1px solid var(--navy-border); }
+.brand-logo { font-family:'Fraunces',serif; font-size:20px; font-weight:700; color:var(--text); letter-spacing:-0.02em; }
+.brand-logo span { color:var(--blue-light); }
+.brand-sub { font-size:11px; color:var(--text-muted); margin-top:3px; font-weight:300; }
+.nav { flex:1; padding:16px 12px; display:flex; flex-direction:column; gap:4px; overflow-y:auto; }
+.nav-section { font-size:10px; font-weight:600; color:var(--text-dim); letter-spacing:0.1em; text-transform:uppercase; padding:12px 8px 6px; }
+.nav-item { display:flex; align-items:center; gap:10px; padding:10px 12px; border-radius:var(--radius-sm); cursor:pointer; font-size:13px; font-weight:500; color:var(--text-muted); transition:all 0.18s; border:1px solid transparent; user-select:none; }
+.nav-item:hover { background:var(--navy-soft); color:var(--text); }
+.nav-item.active { background:var(--blue-glow); color:var(--blue-light); border-color:var(--navy-border); }
+.nav-icon { width:18px; height:18px; flex-shrink:0; }
+.sidebar-footer { padding:16px; border-top:1px solid var(--navy-border); }
+.status-pill { display:flex; align-items:center; gap:8px; background:var(--navy-card); border:1px solid var(--navy-border); border-radius:999px; padding:7px 13px; font-size:11px; color:var(--text-muted); }
+#fb-dot { width:7px; height:7px; border-radius:50%; background:var(--gold); flex-shrink:0; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+/* ─── Main ─── */
+.main { margin-left:240px; flex:1; padding:32px 36px 80px; max-width:100%; }
+.page-header { margin-bottom:28px; }
+.page-title { font-family:'Fraunces',serif; font-size:28px; font-weight:700; color:var(--text); line-height:1.15; }
+.page-desc { font-size:13px; color:var(--text-muted); margin-top:4px; font-weight:300; }
+.section { display:none; animation:fadeUp 0.3s ease; }
+.section.active { display:block; }
+@keyframes fadeUp { from{opacity:0;transform:translateY(10px)} to{opacity:1;transform:translateY(0)} }
+
+/* ─── Cards ─── */
+.card { background:var(--navy-card); border:1px solid var(--navy-border); border-radius:var(--radius); padding:22px 24px; margin-bottom:16px; transition:border-color 0.2s; }
+.card:hover { border-color:rgba(56,113,220,0.3); }
+.card-label { font-size:10px; font-weight:600; letter-spacing:0.1em; text-transform:uppercase; color:var(--text-dim); margin-bottom:14px; }
+
+/* ─── Script tabs ─── */
+.script-tabs { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px; }
+.script-tab { padding:5px 14px; border-radius:999px; font-size:11px; font-weight:600; cursor:pointer; border:1px solid var(--navy-border); background:var(--navy-card2); color:var(--text-muted); transition:all .2s; }
+.script-tab:hover { border-color:var(--blue); color:var(--blue-light); }
+.script-tab.active { background:var(--blue-glow); color:var(--blue-light); border-color:var(--blue); }
+.script-variant { display:none; }
+.script-variant.active { display:block; }
+
+/* ─── Step ─── */
+.step-header { display:flex; align-items:center; gap:12px; margin-bottom:14px; }
+.step-num { width:30px; height:30px; border-radius:50%; background:var(--blue); color:#fff; font-size:12px; font-weight:700; display:flex; align-items:center; justify-content:center; flex-shrink:0; box-shadow:0 0 14px var(--blue-glow); }
+.step-title { font-size:14px; font-weight:600; color:var(--text); flex:1; }
+.badge { font-size:11px; font-weight:500; padding:3px 10px; border-radius:999px; border:1px solid; white-space:nowrap; }
+.badge-blue   { background:rgba(56,113,220,0.12); color:var(--blue-light);  border-color:var(--navy-border); }
+.badge-green  { background:var(--green-soft);     color:var(--green);        border-color:rgba(34,197,94,0.2); }
+.badge-gold   { background:var(--gold-soft);      color:var(--gold);         border-color:rgba(245,200,66,0.2); }
+.badge-red    { background:var(--red-soft);        color:var(--red);          border-color:rgba(248,113,113,0.2); }
+.badge-cyan   { background:rgba(34,211,238,0.08); color:var(--cyan);         border-color:rgba(34,211,238,0.2); }
+.badge-orange { background:rgba(251,146,60,0.1);  color:var(--orange);       border-color:rgba(251,146,60,0.2); }
+.badge-purple { background:var(--purple-soft);    color:var(--purple);       border-color:rgba(167,139,250,0.2); }
+
+/* ─── Bubble ─── */
+.bubble { background:var(--navy-card2); border-left:3px solid var(--blue); border-radius:0 var(--radius-sm) var(--radius-sm) 0; padding:14px 16px; font-size:13.5px; line-height:1.8; color:var(--text); margin-bottom:10px; position:relative; white-space:pre-wrap; }
+.bubble b, .bubble strong { color:var(--blue-light); font-weight:600; }
+.bubble.green-border { border-left-color:var(--green); }
+.bubble.gold-border  { border-left-color:var(--gold); }
+.bubble.purple-border{ border-left-color:var(--purple); }
+.tip { font-size:12px; color:var(--text-dim); font-style:italic; margin-top:6px; }
+
+/* ─── Copy button ─── */
+.copy-btn { display:inline-flex; align-items:center; gap:5px; background:var(--navy-2); border:1px solid var(--navy-border); color:var(--text-muted); border-radius:var(--radius-xs); padding:5px 12px; font-size:11px; font-family:'Sora',sans-serif; cursor:pointer; transition:all 0.2s; margin-top:8px; }
+.copy-btn:hover { background:var(--blue); color:#fff; border-color:var(--blue); }
+.copy-btn.success { background:var(--green); color:#fff; border-color:var(--green); }
+
+/* ─── Price grid ─── */
+.price-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(130px,1fr)); gap:12px; margin:14px 0; }
+.price-card { background:var(--navy-card2); border:1px solid var(--navy-border); border-radius:var(--radius); padding:16px; text-align:center; transition:border-color 0.2s, transform 0.2s; cursor:default; }
+.price-card:hover { border-color:var(--blue); transform:translateY(-2px); }
+.price-card.best { border-color:var(--gold); background:linear-gradient(135deg,rgba(245,200,66,0.05),var(--navy-card2)); }
+.price-mes   { font-size:10px; color:var(--text-muted); text-transform:uppercase; letter-spacing:.05em; margin-bottom:6px; }
+.price-val   { font-family:'Fraunces',serif; font-size:21px; font-weight:700; color:var(--text); }
+.price-parc  { font-size:11px; color:var(--blue-light); margin-top:4px; }
+.price-bonus { font-size:10px; margin-top:6px; background:var(--gold-soft); color:var(--gold); border:1px solid rgba(245,200,66,0.2); padding:2px 8px; border-radius:999px; display:inline-block; }
+
+/* ─── Objections ─── */
+.obj-row { display:flex; gap:12px; margin-bottom:14px; align-items:flex-start; }
+.obj-q { flex-shrink:0; padding:6px 12px; border-radius:var(--radius-sm); font-size:12px; font-weight:600; white-space:nowrap; align-self:flex-start; margin-top:2px; background:var(--red-soft); color:var(--red); border:1px solid rgba(248,113,113,0.2); }
+.obj-a { flex:1; background:var(--navy-card2); border:1px solid var(--navy-border); border-radius:var(--radius-sm); padding:12px 14px; font-size:13.5px; line-height:1.75; color:var(--text); }
+.obj-a b { color:var(--green); }
+
+/* ─── Audio accordion ─── */
+.audio-card { background:var(--navy-card); border:1px solid var(--navy-border); border-radius:var(--radius); margin-bottom:14px; overflow:hidden; }
+.audio-head { display:flex; align-items:center; gap:12px; padding:16px 20px; cursor:pointer; transition:background 0.18s; user-select:none; }
+.audio-head:hover { background:var(--navy-card2); }
+.audio-icon { width:38px; height:38px; border-radius:50%; background:var(--gold-soft); border:1px solid rgba(245,200,66,0.2); display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+.audio-icon svg { width:15px; height:15px; color:var(--gold); }
+.audio-info { flex:1; }
+.audio-title { font-size:14px; font-weight:600; color:var(--text); }
+.audio-sub   { font-size:11px; color:var(--text-muted); margin-top:2px; }
+.chevron { width:16px; height:16px; color:var(--text-dim); transition:transform .3s; }
+.audio-card.open .chevron { transform:rotate(180deg); }
+.audio-body { display:none; padding:0 20px 20px; border-top:1px solid var(--navy-border); }
+.audio-card.open .audio-body { display:block; }
+.script-mono { background:var(--navy); border:1px solid var(--navy-border); border-radius:var(--radius-sm); padding:16px; font-family:'DM Mono',monospace; font-size:13px; line-height:1.85; color:var(--text); margin-top:14px; white-space:pre-wrap; }
+.hl  { color:var(--gold); font-weight:500; }
+.pau { color:var(--cyan); font-style:italic; }
+
+/* ─── Composição ─── */
+.ingr-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(150px,1fr)); gap:10px; margin-top:12px; }
+.ingr-card { background:var(--navy-card2); border:1px solid var(--navy-border); border-radius:var(--radius); padding:14px; text-align:center; transition:border-color .2s; }
+.ingr-card:hover { border-color:var(--blue); }
+.ingr-nome { font-size:13px; font-weight:600; color:var(--text); margin-bottom:4px; }
+.ingr-dose { font-family:'DM Mono',monospace; font-size:14px; color:var(--blue-light); font-weight:500; }
+.ingr-desc { font-size:11px; color:var(--text-muted); margin-top:6px; line-height:1.4; }
+
+/* ─── Pedidos / Form ─── */
+.form-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+.form-group { display:flex; flex-direction:column; gap:5px; }
+.form-group.full { grid-column:1/-1; }
+label { font-size:11px; color:var(--text-muted); font-weight:500; }
+input, select { background:var(--navy); border:1px solid var(--navy-border); border-radius:var(--radius-sm); color:var(--text); font-family:'Sora',sans-serif; font-size:13px; padding:9px 12px; outline:none; transition:border-color .2s; }
+input:focus, select:focus { border-color:var(--blue); box-shadow:0 0 0 3px rgba(56,113,220,0.12); }
+input::placeholder { color:var(--text-dim); }
+select option { background:var(--navy-2); }
+.btn { display:inline-flex; align-items:center; gap:8px; padding:10px 20px; border-radius:var(--radius-sm); border:none; font-family:'Sora',sans-serif; font-size:13px; font-weight:600; cursor:pointer; transition:all .2s; }
+.btn-primary { background:var(--blue); color:#fff; box-shadow:0 0 20px rgba(56,113,220,0.28); }
+.btn-primary:hover { background:#2b62c8; transform:translateY(-1px); box-shadow:0 4px 24px rgba(56,113,220,0.4); }
+.btn-ghost { background:transparent; color:var(--text-muted); border:1px solid var(--navy-border); }
+.btn-ghost:hover { background:var(--navy-card2); color:var(--text); }
+.btn-row { display:flex; gap:10px; margin-top:16px; flex-wrap:wrap; }
+.pedido-card { background:var(--navy-card); border:1px solid var(--navy-border); border-radius:var(--radius); padding:16px 20px; margin-bottom:12px; transition:border-color .2s; }
+.pedido-card:hover { border-color:rgba(56,113,220,.3); }
+.pedido-header { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:10px; flex-wrap:wrap; gap:8px; }
+.pedido-info { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.pedido-nome { font-size:15px; font-weight:600; color:var(--text); }
+.kit-badge { font-size:11px; padding:3px 10px; border-radius:999px; background:var(--blue-glow); color:var(--blue-light); border:1px solid var(--navy-border); }
+.pedido-data { font-size:11px; color:var(--text-dim); }
+.pedido-detalhes { display:flex; gap:14px; flex-wrap:wrap; font-size:12px; color:var(--text-muted); margin-bottom:6px; }
+.pedido-end { font-size:12px; color:var(--text-dim); margin-top:4px; }
+.btn-del { background:transparent; border:1px solid rgba(248,113,113,.2); color:var(--red); border-radius:var(--radius-xs); padding:3px 8px; font-size:12px; cursor:pointer; transition:all .18s; }
+.btn-del:hover { background:var(--red-soft); }
+.check-list { list-style:none; }
+.check-item { display:flex; align-items:flex-start; gap:12px; padding:11px 0; border-bottom:1px solid var(--navy-border); cursor:pointer; font-size:13.5px; color:var(--text); transition:color .2s; }
+.check-item:last-child { border:none; }
+.check-item.done { color:var(--text-dim); }
+.check-item.done span { text-decoration:line-through; }
+.check-box { width:20px; height:20px; border:1.5px solid var(--navy-border); border-radius:5px; flex-shrink:0; margin-top:2px; display:flex; align-items:center; justify-content:center; transition:all .2s; }
+.check-box.checked { background:var(--blue); border-color:var(--blue); }
+.check-box svg { width:11px; height:11px; color:#fff; }
+textarea { width:100%; background:var(--navy); border:1px solid var(--navy-border); border-radius:var(--radius-sm); color:var(--text); font-family:'Sora',sans-serif; font-size:13px; padding:12px; outline:none; resize:vertical; min-height:100px; transition:border-color .2s; line-height:1.7; }
+textarea:focus { border-color:var(--blue); box-shadow:0 0 0 3px rgba(56,113,220,0.12); }
+textarea::placeholder { color:var(--text-dim); }
+.anvisa-box { background:linear-gradient(135deg,rgba(34,197,94,0.06),var(--navy-card)); border:1px solid rgba(34,197,94,0.2); border-radius:var(--radius); padding:20px; margin-bottom:16px; }
+.anvisa-title { font-size:14px; font-weight:600; color:var(--green); margin-bottom:8px; display:flex; align-items:center; gap:8px; }
+.anvisa-text  { font-size:13px; color:var(--text); line-height:1.75; }
+.stats-row { display:grid; grid-template-columns:repeat(auto-fit, minmax(150px,1fr)); gap:14px; margin-bottom:28px; }
+.stat-card  { background:var(--navy-card); border:1px solid var(--navy-border); border-radius:var(--radius); padding:18px 20px; }
+.stat-val   { font-family:'Fraunces',serif; font-size:26px; font-weight:700; color:var(--text); }
+.stat-label { font-size:11px; color:var(--text-muted); margin-top:4px; }
+.stat-accent { color:var(--blue-light); }
+.empty-state { text-align:center; padding:48px 0; font-size:14px; color:var(--text-dim); }
+.toast { position:fixed; bottom:24px; right:24px; z-index:999; padding:12px 20px; border-radius:var(--radius); font-size:13px; font-weight:500; display:none; box-shadow:0 8px 32px rgba(0,0,0,.4); animation:slideUp .3s ease; }
+.toast.green { background:var(--green); color:#fff; }
+.toast.red   { background:var(--red);   color:#fff; }
+.toast.blue  { background:var(--blue);  color:#fff; }
+@keyframes slideUp { from{transform:translateY(16px);opacity:0} to{transform:translateY(0);opacity:1} }
+hr.div { border:none; border-top:1px solid var(--navy-border); margin:24px 0; }
+
+/* ─── Info box ─── */
+.info-box { background:linear-gradient(135deg,rgba(56,113,220,0.06),var(--navy-card)); border:1px solid rgba(56,113,220,0.2); border-radius:var(--radius); padding:16px 18px; margin-bottom:14px; font-size:13px; color:var(--text); line-height:1.7; }
+.info-box-title { font-size:12px; font-weight:700; color:var(--blue-light); text-transform:uppercase; letter-spacing:.06em; margin-bottom:8px; }
+
+@media(max-width:768px) { .sidebar{width:200px;} .main{margin-left:200px;padding:20px 16px 60px;} .form-grid{grid-template-columns:1fr;} .price-grid{grid-template-columns:1fr 1fr;} }
+@media(max-width:560px) { .sidebar{position:fixed;left:-200px;transition:left .3s;} .sidebar.open{left:0;} .main{margin-left:0;padding:60px 14px 60px;} .mob-toggle{display:flex !important;} }
+.mob-toggle { display:none; position:fixed; top:14px; left:14px; z-index:200; background:var(--navy-card); border:1px solid var(--navy-border); border-radius:var(--radius-sm); padding:8px 10px; cursor:pointer; align-items:center; gap:6px; font-size:13px; color:var(--text-muted); }
+</style>
+</head>
+<body>
+
+<div class="orb orb1"></div>
+<div class="orb orb2"></div>
+<div class="mob-toggle" onclick="document.querySelector('.sidebar').classList.toggle('open')">☰ Menu</div>
+
+<div class="app">
+
+  <!-- ════════ SIDEBAR ════════ -->
+  <aside class="sidebar">
+    <div class="sidebar-brand">
+      <div class="brand-logo">Ali<span>Flex</span></div>
+      <div class="brand-sub">Gerenciamento Ali Flex 💙</div>
+    </div>
+    <nav class="nav">
+      <div class="nav-section">Atendimento</div>
+      <div class="nav-item active" onclick="showTab('dashboard')">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+        Dashboard
+      </div>
+      <div class="nav-item" onclick="showTab('scripts')">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 9h8M8 13h6M5 5h14a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2z"/></svg>
+        Scripts
+      </div>
+      <div class="nav-item" onclick="showTab('objecoes')">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
+        Objeções
+      </div>
+      <div class="nav-item" onclick="showTab('audios')">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a3 3 0 013 3v7a3 3 0 01-6 0V5a3 3 0 013-3z"/><path d="M19 10v1a7 7 0 01-14 0v-1M12 19v3"/></svg>
+        Roteiros de Áudio
+      </div>
+      <div class="nav-section">Gestão</div>
+      <div class="nav-item" onclick="showTab('pedidos')">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
+        Pedidos
+      </div>
+      <div class="nav-item" onclick="showTab('novo-pedido')">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v8M8 12h8"/></svg>
+        Novo Pedido
+      </div>
+      <div class="nav-item" onclick="showTab('notas')">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+        Notas
+      </div>
+      <div class="nav-section">Produto</div>
+      <div class="nav-item" onclick="showTab('composicao')">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 3H5a2 2 0 00-2 2v4m6-6h10a2 2 0 012 2v4M9 3v18m0 0h10a2 2 0 002-2V9M9 21H5a2 2 0 01-2-2V9m0 0h18"/></svg>
+        Composição
+      </div>
+      <div class="nav-item" onclick="showTab('anvisa')">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        ANVISA / Legal
+      </div>
+    </nav>
+    <div class="sidebar-footer">
+      <div class="status-pill">
+        <div id="fb-dot"></div>
+        <span id="fb-status">Conectando…</span>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ════════ MAIN ════════ -->
+  <main class="main">
+
+    <!-- ─── DASHBOARD ─── -->
+    <div id="dashboard" class="section active">
+      <div class="page-header">
+        <div class="page-title">Olá, <span style="color:var(--blue-light)">Márcia!</span> 👋</div>
+        <div class="page-desc">Resumo do sistema de gerenciamento Ali Flex em tempo real.</div>
+      </div>
+      <div class="stats-row">
+        <div class="stat-card"><div class="stat-val stat-accent" id="stat-total">—</div><div class="stat-label">Total de Pedidos</div></div>
+        <div class="stat-card"><div class="stat-val" style="color:var(--gold)" id="stat-receita">—</div><div class="stat-label">Receita Estimada</div></div>
+        <div class="stat-card"><div class="stat-val" style="color:var(--green)" id="stat-hoje">—</div><div class="stat-label">Pedidos Hoje</div></div>
+      </div>
+      <div class="card">
+        <div class="card-label">Acesso Rápido</div>
+        <div style="display:flex;flex-wrap:wrap;gap:10px">
+          <button class="btn btn-primary" onclick="showTab('scripts')">📋 Scripts</button>
+          <button class="btn btn-ghost"   onclick="showTab('novo-pedido')">➕ Novo Pedido</button>
+          <button class="btn btn-ghost"   onclick="showTab('objecoes')">💬 Objeções</button>
+          <button class="btn btn-ghost"   onclick="showTab('audios')">🎙️ Áudios</button>
+          <button class="btn btn-ghost"   onclick="showTab('composicao')">🧪 Composição</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-label">Últimos Pedidos</div>
+        <div id="dash-pedidos-list"><div class="empty-state" style="padding:20px 0">Carregando…</div></div>
+      </div>
+    </div>
+
+    <!-- ─── SCRIPTS ─── -->
+    <div id="scripts" class="section">
+      <div class="page-header">
+        <div class="page-title">Scripts de Atendimento</div>
+        <div class="page-desc">Copie cada mensagem com um clique e envie direto pelo WhatsApp. Escolha a variação que mais combina com o momento.</div>
+      </div>
+
+      <!-- ETAPA 1 — PRIMEIRO CONTATO -->
+      <div class="card">
+        <div class="step-header">
+          <div class="step-num">1</div>
+          <div class="step-title">Primeiro Contato — Abertura</div>
+          <span class="badge badge-blue">Abertura</span>
+        </div>
+        <div class="card-label">Escolha a variação de abordagem</div>
+        <div class="script-tabs">
+          <div class="script-tab active" onclick="switchTab(this,'cont',0)">Opção A — Padrão</div>
+          <div class="script-tab" onclick="switchTab(this,'cont',1)">Opção B — Empática</div>
+          <div class="script-tab" onclick="switchTab(this,'cont',2)">Opção C — Direta</div>
+          <div class="script-tab" onclick="switchTab(this,'cont',3)">Opção D — Curiosidade</div>
+        </div>
+        <div class="script-variant active" data-group="cont" data-idx="0">
+          <div class="bubble" id="s1a">Oi! Tudo bem? 😊
+
+Aqui é a <b>Márcia</b>! Vi que você demonstrou interesse no <b>Ali Flex</b> e quero te ajudar.
+
+Me conta: você está sentindo dores nas articulações, joelhos ou quadril? Ou quer melhorar sua mobilidade no dia a dia?</div>
+          <button class="copy-btn" onclick="copiarMensagem('s1a',this)">📋 Copiar</button>
+        </div>
+        <div class="script-variant" data-group="cont" data-idx="1">
+          <div class="bubble green-border" id="s1b">Oi, que bom te ver por aqui! 🌻
+
+Sou a <b>Márcia</b>, e cuido pessoalmente de cada cliente que chega até mim. Vi que você se interessou pelo <b>Ali Flex</b> e fico feliz com isso!
+
+Antes de te falar tudo sobre o produto, quero entender melhor a sua situação. O que está te incomodando mais — dor nas articulações, dificuldade de se mover, cansaço muscular? Me conta com calma que estou aqui pra te ajudar! 🙏</div>
+          <button class="copy-btn" onclick="copiarMensagem('s1b',this)">📋 Copiar</button>
+        </div>
+        <div class="script-variant" data-group="cont" data-idx="2">
+          <div class="bubble gold-border" id="s1c">Olá! 👋 Aqui é a <b>Márcia</b>, do Ali Flex.
+
+Vi o seu contato e já vim te responder! 😊
+
+Me diz: qual é a sua maior dificuldade hoje — dor, rigidez, dificuldade de movimentar? Assim te mostro exatamente como o Ali Flex pode te ajudar!</div>
+          <button class="copy-btn" onclick="copiarMensagem('s1c',this)">📋 Copiar</button>
+        </div>
+        <div class="script-variant" data-group="cont" data-idx="3">
+          <div class="bubble purple-border" id="s1d">Oi! Tudo bem com você? 💙
+
+Sou a <b>Márcia</b> e vou te atender hoje com muito prazer!
+
+Você sabia que a maioria das pessoas que me procuram nunca imaginou que um suplemento natural poderia fazer tanta diferença na qualidade de vida delas?
+
+Me conta um pouquinho sobre o que você está sentindo — dores, cansaço, dificuldade de se mexer? Quero entender a sua história antes de te apresentar o Ali Flex! 🌿</div>
+          <button class="copy-btn" onclick="copiarMensagem('s1d',this)">📋 Copiar</button>
+        </div>
+        <p class="tip">💡 Aguarde a resposta antes de continuar. Demonstre interesse genuíno pela situação da pessoa.</p>
+      </div>
+
+      <!-- ETAPA 2 — APRESENTAÇÃO DO PRODUTO -->
+      <div class="card">
+        <div class="step-header">
+          <div class="step-num">2</div>
+          <div class="step-title">Apresentação do Produto</div>
+          <span class="badge badge-green">Produto</span>
+        </div>
+        <div class="card-label">Escolha a forma de apresentar o Ali Flex</div>
+        <div class="script-tabs">
+          <div class="script-tab active" onclick="switchTab(this,'prod',0)">Opção A — Completa</div>
+          <div class="script-tab" onclick="switchTab(this,'prod',1)">Opção B — Resumida</div>
+          <div class="script-tab" onclick="switchTab(this,'prod',2)">Opção C — Benefícios em foco</div>
+        </div>
+        <div class="script-variant active" data-group="prod" data-idx="0">
+          <div class="bubble" id="s2a">Então você vai adorar o Ali Flex! 🌿
+
+É um suplemento alimentar natural desenvolvido especialmente para <b>aliviar dores e cuidar das articulações</b>. A fórmula combina ingredientes poderosos que agem em conjunto:
+
+✅ <b>Cúrcuma</b> — anti-inflamatório natural
+✅ <b>Colágeno Tipo II</b> — regenera cartilagens
+✅ <b>Condroitina</b> — lubrifica as articulações
+✅ <b>Magnésio</b> — relaxa músculos e reduz cãibras
+✅ <b>MSM</b> — reduz rigidez articular
+✅ <b>PEA</b> — modulador poderoso da dor
+
+E o melhor: é <b>sem glúten</b>, sem açúcar e seguro para uso contínuo! 💊</div>
+          <button class="copy-btn" onclick="copiarMensagem('s2a',this)">📋 Copiar</button>
+        </div>
+        <div class="script-variant" data-group="prod" data-idx="1">
+          <div class="bubble green-border" id="s2b">Que ótimo que você me contou! O Ali Flex foi feito exatamente pra isso. 😊
+
+Em poucas palavras: é um suplemento natural que age nas articulações de dentro pra fora. Ele combina <b>Cúrcuma, Colágeno Tipo II, Condroitina, Magnésio, MSM e PEA</b> — uma fórmula completa pra aliviar dores, reduzir inflamação e melhorar a mobilidade.
+
+Tudo natural, sem glúten e aprovado pelas normas do Ministério da Saúde! ✅</div>
+          <button class="copy-btn" onclick="copiarMensagem('s2b',this)">📋 Copiar</button>
+        </div>
+        <div class="script-variant" data-group="prod" data-idx="2">
+          <div class="bubble gold-border" id="s2c">Imagina acordar de manhã <b>sem aquela dor e rigidez</b>... conseguir se agachar, subir escada, brincar com os netos — tudo isso de volta! Isso é o que o Ali Flex proporciona! 🌟
+
+O produto é um suplemento natural que:
+🔹 <b>Alivia dores</b> nas articulações e músculos
+🔹 <b>Reduz a inflamação</b> de forma natural
+🔹 <b>Lubrifica e regenera</b> as cartilagens
+🔹 <b>Melhora a mobilidade</b> e a disposição
+🔹 <b>Reduz cãibras</b> e a rigidez matinal
+
+Tudo isso em apenas 2 cápsulas por dia! 💊</div>
+          <button class="copy-btn" onclick="copiarMensagem('s2c',this)">📋 Copiar</button>
+        </div>
+      </div>
+
+      <!-- ETAPA 2B — COMPOSIÇÃO DETALHADA -->
+      <div class="card">
+        <div class="step-header">
+          <div class="step-num">2B</div>
+          <div class="step-title">Explicar a Composição ao Cliente</div>
+          <span class="badge badge-purple">Composição</span>
+        </div>
+        <div class="card-label">Quando o cliente perguntar sobre os ingredientes</div>
+        <div class="script-tabs">
+          <div class="script-tab active" onclick="switchTab(this,'comp',0)">Opção A — Detalhada</div>
+          <div class="script-tab" onclick="switchTab(this,'comp',1)">Opção B — Simples</div>
+        </div>
+        <div class="script-variant active" data-group="comp" data-idx="0">
+          <div class="bubble purple-border" id="s2ba">Ótima pergunta! Deixa eu te explicar direitinho cada ingrediente do Ali Flex 🧪
+
+🌿 <b>Cúrcuma (100mg)</b> — é um anti-inflamatório natural poderoso. Ajuda a reduzir o inchaço e a dor nas articulações sem agredir o estômago.
+
+🦴 <b>Colágeno Tipo II (2mg)</b> — o colágeno específico das cartilagens. Ajuda a regenerar o desgaste e a melhorar a mobilidade das juntas.
+
+💎 <b>Condroitina (100mg)</b> — "o lubrificante" das articulações. Mantém a cartilagem hidratada e retarda o desgaste.
+
+🔬 <b>MSM (50mg)</b> — Metilsulfonilmetano. Reduz a rigidez matinal e melhora a flexibilidade.
+
+⚡ <b>PEA (0,5mg)</b> — Palmitoiletanolamida. Modulador natural da dor crônica — age no sistema nervoso pra reduzir a sensação de dor.
+
+💪 <b>Magnésio (100mg)</b> — relaxa a musculatura, reduz cãibras e ainda melhora a qualidade do sono.
+
+São 6 ativos que juntos formam uma fórmula completa! Sem glúten, sem açúcar, 100% seguro. ✅</div>
+          <button class="copy-btn" onclick="copiarMensagem('s2ba',this)">📋 Copiar</button>
+        </div>
+        <div class="script-variant" data-group="comp" data-idx="1">
+          <div class="bubble purple-border" id="s2bb">O Ali Flex tem 6 ingredientes naturais que trabalham juntos pelas suas articulações:
+
+🌿 <b>Cúrcuma</b> — combate a inflamação
+🦴 <b>Colágeno Tipo II</b> — regenera as cartilagens
+💎 <b>Condroitina</b> — lubrifica as juntas
+🔬 <b>MSM</b> — reduz rigidez
+⚡ <b>PEA</b> — alivia a dor crônica
+💪 <b>Magnésio</b> — relaxa os músculos
+
+Tudo natural, sem glúten e aprovado pelas normas do Ministério da Saúde! 🙏</div>
+          <button class="copy-btn" onclick="copiarMensagem('s2bb',this)">📋 Copiar</button>
+        </div>
+        <p class="tip">💡 Dica: sempre que o cliente perguntar "o que tem nele?" essa é a hora de usar esses scripts. Vai na aba Composição do menu pra ver as doses exatas.</p>
+      </div>
+
+      <!-- ETAPA 3 — PROVAS SOCIAIS -->
+      <div class="card">
+        <div class="step-header">
+          <div class="step-num">3</div>
+          <div class="step-title">Provas Sociais e Confiança</div>
+          <span class="badge badge-cyan">Confiança</span>
+        </div>
+        <div class="card-label">Depoimentos e credibilidade</div>
+        <div class="script-tabs">
+          <div class="script-tab active" onclick="switchTab(this,'prova',0)">Opção A — Depoimentos</div>
+          <div class="script-tab" onclick="switchTab(this,'prova',1)">Opção B — Resultados</div>
+        </div>
+        <div class="script-variant active" data-group="prova" data-idx="0">
+          <div class="bubble" id="s3a">Olha o que as nossas clientes estão falando! 😍
+
+Muitas pessoas acima dos 45 anos estão recuperando a mobilidade, dormindo melhor e voltando a fazer as atividades que adoravam — sem dor!
+
+Tenho clientes que me contam que conseguiram <b>subir escada sem se apoiar</b>, outras que <b>voltaram a caminhar no parque</b>, e muitas que pararam de tomar anti-inflamatório todo dia.
+
+O Ali Flex é <b>isento de registro ANVISA</b> conforme a RDC nº 240/2018, seguindo todas as normas do Ministério da Saúde. ✅
+
+Pode usar com total tranquilidade! 🙏</div>
+          <button class="copy-btn" onclick="copiarMensagem('s3a',this)">📋 Copiar</button>
+        </div>
+        <div class="script-variant" data-group="prova" data-idx="1">
+          <div class="bubble green-border" id="s3b">Sabe o que mais me emociona nesse trabalho? 💚
+
+Ver o retorno das clientes depois de algumas semanas usando o Ali Flex. Tem gente que me manda mensagem dizendo que dormiu <b>sem dor pela primeira vez em anos</b>. Outras que conseguiram <b>agachar e se levantar sozinhas</b>. Mães que voltaram a brincar com os filhos sem precisar parar por causa da dor.
+
+É por isso que eu acredito tanto nesse produto! E pra sua segurança: o Ali Flex segue todas as normas da ANVISA como suplemento alimentar — pode ser consumido com total segurança! ✅</div>
+          <button class="copy-btn" onclick="copiarMensagem('s3b',this)">📋 Copiar</button>
+        </div>
+      </div>
+
+      <!-- ETAPA 4 — VALORES -->
+      <div class="card">
+        <div class="step-header">
+          <div class="step-num">4</div>
+          <div class="step-title">Valores e Kits</div>
+          <span class="badge badge-gold">Oferta</span>
+        </div>
+        <div class="card-label">Apresentação dos kits — escolha a abordagem</div>
+        <div class="script-tabs">
+          <div class="script-tab active" onclick="switchTab(this,'val',0)">Opção A — Completa</div>
+          <div class="script-tab" onclick="switchTab(this,'val',1)">Opção B — Direto ao ponto</div>
+          <div class="script-tab" onclick="switchTab(this,'val',2)">Opção C — Destaca o melhor kit</div>
+        </div>
+        <div class="script-variant active" data-group="val" data-idx="0">
+          <div class="bubble" id="s4a">Temos kits com <b>frete grátis</b> e você <b>só paga na entrega</b>! 📦
+
+🟡 <b>1 mês</b> — R$ 197,00 à vista
+🟢 <b>2 meses</b> — R$ 247,00 (12x R$24,80)
+⭐ <b>3 meses</b> — R$ 297,00 (12x R$29,82) — Mais pedido!
+🔵 <b>4 meses</b> — R$ 347,00 (12x R$34,84)
+🔵 <b>5 meses</b> — R$ 397,00 (12x R$39,83)
+🔵 <b>6 meses</b> — R$ 447,00 (12x R$44,88)
+
+Todos os kits vêm com <b>1 frasco grátis</b> 🎁
+
+Para sentir resultado de verdade, o ideal são pelo menos <b>3 meses de uso</b>. Qual opção faz mais sentido pra você?</div>
+          <button class="copy-btn" onclick="copiarMensagem('s4a',this)">📋 Copiar</button>
+        </div>
+        <div class="script-variant" data-group="val" data-idx="1">
+          <div class="bubble gold-border" id="s4b">Os kits são esses aqui 👇
+
+📦 <b>1 frasco</b> — R$197 | <b>2 frascos</b> — R$247 | <b>3 frascos ⭐</b> — R$297 | <b>4 frascos</b> — R$347 | <b>5 frascos</b> — R$397 | <b>6 frascos</b> — R$447
+
+Todos com <b>frete grátis</b> e <b>pagamento só na entrega</b>! 🎁
+
+Qual você prefere?</div>
+          <button class="copy-btn" onclick="copiarMensagem('s4b',this)">📋 Copiar</button>
+        </div>
+        <div class="script-variant" data-group="val" data-idx="2">
+          <div class="bubble green-border" id="s4c">Deixa eu te apresentar a opção mais escolhida pelas clientes! ⭐
+
+O <b>kit de 3 meses</b> é o mais pedido por um motivo simples: é o tempo ideal para sentir o resultado completo do Ali Flex — menos dor, mais mobilidade, mais disposição.
+
+⭐ <b>Kit 3 meses — R$ 297,00</b> (ou 12x de R$29,82 no cartão)
+Inclui 1 frasco grátis + frete grátis + pagamento só na entrega! 🎁
+
+Mas se preferir começar com menos:
+🟡 <b>1 mês</b> — R$197 | 🟢 <b>2 meses</b> — R$247 | 🔵 <b>4 meses</b> — R$347
+
+Qual faz mais sentido pra você?</div>
+          <button class="copy-btn" onclick="copiarMensagem('s4c',this)">📋 Copiar</button>
+        </div>
+        <div class="price-grid" style="margin-top:14px">
+          <div class="price-card"><div class="price-mes">1 mês</div><div class="price-val">R$197</div><div class="price-parc">à vista</div></div>
+          <div class="price-card"><div class="price-mes">2 meses</div><div class="price-val">R$247</div><div class="price-parc">12x R$24,80</div><div class="price-bonus">+1 grátis</div></div>
+          <div class="price-card best"><div class="price-mes">3 meses ⭐</div><div class="price-val">R$297</div><div class="price-parc">12x R$29,82</div><div class="price-bonus">Mais pedido</div></div>
+          <div class="price-card"><div class="price-mes">4 meses</div><div class="price-val">R$347</div><div class="price-parc">12x R$34,84</div><div class="price-bonus">+1 grátis</div></div>
+          <div class="price-card"><div class="price-mes">5 meses</div><div class="price-val">R$397</div><div class="price-parc">12x R$39,83</div><div class="price-bonus">+1 grátis</div></div>
+          <div class="price-card"><div class="price-mes">6 meses</div><div class="price-val">R$447</div><div class="price-parc">12x R$44,88</div><div class="price-bonus">+1 grátis</div></div>
+        </div>
+        <p class="tip">💡 Sempre direcione para o kit de 3 ou 4 meses — maior resultado e melhor ticket.</p>
+      </div>
+
+      <!-- ETAPA 5 — FECHAR PEDIDO -->
+      <div class="card">
+        <div class="step-header">
+          <div class="step-num">5</div>
+          <div class="step-title">Fechar Pedido — Coletar Dados</div>
+          <span class="badge badge-green">Fechamento</span>
+        </div>
+        <div class="card-label">Quando o cliente demonstra interesse em comprar</div>
+        <div class="script-tabs">
+          <div class="script-tab active" onclick="switchTab(this,'fech',0)">Opção A — Padrão</div>
+          <div class="script-tab" onclick="switchTab(this,'fech',1)">Opção B — Animada</div>
+        </div>
+        <div class="script-variant active" data-group="fech" data-idx="0">
+          <div class="bubble" id="s5a">Ótimo! Vou separar o seu kit com urgência 🙏
+
+Para finalizar o seu pedido, preciso de algumas informações:
+
+<b>Dados pessoais:</b>
+• Nome completo
+• CPF
+
+<b>Endereço de entrega:</b>
+• CEP
+• Endereço e número
+• Bairro
+• Cidade / Estado
+
+Pode me mandar aqui! 😊</div>
+          <button class="copy-btn" onclick="copiarMensagem('s5a',this)">📋 Copiar</button>
+        </div>
+        <div class="script-variant" data-group="fech" data-idx="1">
+          <div class="bubble green-border" id="s5b">Que decisão incrível! Você vai se orgulhar muito dessa escolha 💚🎉
+
+Agora é rapidinho — só preciso de alguns dados pra garantir o seu pedido:
+
+✏️ <b>Nome completo</b>
+✏️ <b>CPF</b>
+✏️ <b>CEP</b>
+✏️ <b>Endereço, número e bairro</b>
+✏️ <b>Cidade e Estado</b>
+
+Pode me mandar tudo junto que eu já cuido de tudo! 😊</div>
+          <button class="copy-btn" onclick="copiarMensagem('s5b',this)">📋 Copiar</button>
+        </div>
+      </div>
+
+      <!-- ETAPA 6 — PÓS PEDIDO -->
+      <div class="card">
+        <div class="step-header">
+          <div class="step-num">6</div>
+          <div class="step-title">Confirmação do Pedido</div>
+          <span class="badge badge-cyan">Pós-venda</span>
+        </div>
+        <div class="card-label">Após receber os dados do cliente</div>
+        <div class="script-tabs">
+          <div class="script-tab active" onclick="switchTab(this,'pos',0)">Opção A — Padrão</div>
+          <div class="script-tab" onclick="switchTab(this,'pos',1)">Opção B — Cuidadosa</div>
+        </div>
+        <div class="script-variant active" data-group="pos" data-idx="0">
+          <div class="bubble" id="s6a">Perfeito! Pedido registrado com sucesso ✅
+
+Seu <b>Ali Flex</b> já está sendo separado para entrega! Assim que sair, você recebe o código de rastreamento aqui mesmo.
+
+Lembre-se: o pagamento é feito <b>somente na entrega</b> — você não paga nada agora! 🙏
+
+Qualquer dúvida, é só me chamar. Que o Ali Flex traga muito alívio e saúde pra você! 💚</div>
+          <button class="copy-btn" onclick="copiarMensagem('s6a',this)">📋 Copiar</button>
+        </div>
+        <div class="script-variant" data-group="pos" data-idx="1">
+          <div class="bubble green-border" id="s6b">Tudo certo! Que alegria ter você como cliente 💙
+
+Recebi todos os seus dados e seu pedido foi registrado. O <b>Ali Flex</b> vai ser separado com carinho e enviado pra você!
+
+📦 O pagamento é feito <b>somente quando o produto chegar na sua porta</b> — sem adiantamento, sem risco!
+📬 Quando sair pra entrega, te mando o código de rastreamento!
+
+Qualquer dúvida que surgir, pode me chamar a qualquer hora. Estou torcendo pelo seu resultado! 🌿💚</div>
+          <button class="copy-btn" onclick="copiarMensagem('s6b',this)">📋 Copiar</button>
+        </div>
+      </div>
+
+      <!-- ETAPA 7 — FOLLOW-UP -->
+      <div class="card">
+        <div class="step-header">
+          <div class="step-num">7</div>
+          <div class="step-title">Follow-up — Recuperar Cliente</div>
+          <span class="badge badge-orange">Follow-up</span>
+        </div>
+        <div class="card-label">Quando o cliente sumiu após demonstrar interesse</div>
+        <div class="script-tabs">
+          <div class="script-tab active" onclick="switchTab(this,'fu',0)">Opção A — Suave</div>
+          <div class="script-tab" onclick="switchTab(this,'fu',1)">Opção B — Com urgência</div>
+          <div class="script-tab" onclick="switchTab(this,'fu',2)">Opção C — Última tentativa</div>
+        </div>
+        <div class="script-variant active" data-group="fu" data-idx="0">
+          <div class="bubble" id="s7a">Oi! Tudo bem? 😊 Aqui é a <b>Márcia</b>!
+
+Vi que você ficou com interesse no Ali Flex e queria saber se ficou alguma dúvida que posso te ajudar a esclarecer. 🌿
+
+Lembra que o pagamento é só <b>na entrega</b> — zero risco pra você!
+
+Ainda temos o kit com frasco grátis disponível, mas o estoque é limitado. Posso garantir o seu? 🤍</div>
+          <button class="copy-btn" onclick="copiarMensagem('s7a',this)">📋 Copiar</button>
+        </div>
+        <div class="script-variant" data-group="fu" data-idx="1">
+          <div class="bubble gold-border" id="s7b">Oi! Aqui é a <b>Márcia</b> novamente 😊
+
+Queria te avisar que o kit com <b>frasco grátis</b> está acabando e não sei por quanto tempo essa promoção vai durar. Não quero que você fique de fora!
+
+Você paga <b>só na entrega</b>, sem adiantar nada. É a oportunidade mais segura que existe de cuidar das suas articulações sem risco! 💚
+
+Posso garantir o seu kit antes que acabe? 🙏</div>
+          <button class="copy-btn" onclick="copiarMensagem('s7b',this)">📋 Copiar</button>
+        </div>
+        <div class="script-variant" data-group="fu" data-idx="2">
+          <div class="bubble purple-border" id="s7c">Oi! Última mensagem, prometo! 🙏
+
+Sou a <b>Márcia</b>, do Ali Flex. Só não queria que você perdesse a oportunidade de cuidar da sua saúde com um produto que realmente funciona.
+
+Sei que a vida é corrida e às vezes a gente esquece. Se ainda tiver interesse, pode me chamar a qualquer momento — estou aqui com muito prazer!
+
+E se não for o momento certo agora, tudo bem também. Cuide-se muito! 💙🌿</div>
+          <button class="copy-btn" onclick="copiarMensagem('s7c',this)">📋 Copiar</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ─── OBJEÇÕES ─── -->
+    <div id="objecoes" class="section">
+      <div class="page-header">
+        <div class="page-title">Contorno de Objeções</div>
+        <div class="page-desc">Respostas prontas para as dúvidas e resistências mais comuns dos clientes.</div>
+      </div>
+
+      <div class="card">
+        <div class="obj-row">
+          <span class="obj-q">😰 OBJ CPF</span>
+          <div class="obj-a" id="ob-cpf">Entendo sua preocupação, mas pode ficar tranquila! O CPF é exigido pela transportadora para emissão da nota fiscal de entrega — é um procedimento padrão e <b>totalmente seguro</b>. Seus dados ficam protegidos e são usados apenas para a entrega. 🙏<br><button class="copy-btn" onclick="copiarMensagem('ob-cpf',this)" style="margin-top:8px;position:static">📋 Copiar</button></div>
+        </div>
+        <hr class="div" style="margin:8px 0">
+        <div class="obj-row">
+          <span class="obj-q">🕐 Vou ver depois</span>
+          <div class="obj-a" id="ob-depois">Claro, sem pressão! 🌸 Só quero te avisar que o estoque com o frasco grátis é <b>bem limitado</b>. Quando acaba, a promoção encerra. Não quero que você fique de fora! Se mudar de ideia, é só me chamar que cuido de tudo. 💚<br><button class="copy-btn" onclick="copiarMensagem('ob-depois',this)" style="margin-top:8px;position:static">📋 Copiar</button></div>
+        </div>
+        <hr class="div" style="margin:8px 0">
+        <div class="obj-row">
+          <span class="obj-q">💸 Tá caro</span>
+          <div class="obj-a" id="ob-caro">Entendo! Mas pensa assim: são <b>menos de R$25 por mês</b> no cartão para cuidar das suas articulações, ter mais disposição e menos dor no dia a dia. Comparado a consultas e medicamentos convencionais, o Ali Flex é muito mais acessível! E ainda vem um frasco grátis. Vale muito! 💚<br><button class="copy-btn" onclick="copiarMensagem('ob-caro',this)" style="margin-top:8px;position:static">📋 Copiar</button></div>
+        </div>
+        <hr class="div" style="margin:8px 0">
+        <div class="obj-row">
+          <span class="obj-q">👨‍👩‍👧 Ver filho(a)</span>
+          <div class="obj-a" id="ob-filho">Que amor! 😊 Inclusive, muitas filhas e filhos são os que compram o Ali Flex para os pais. Se quiser, pode mostrar essa conversa pra ele(a) — tenho certeza que vai aprovar! E se precisar, pode me chamar quando tiver conversado. Estou à disposição! 🙏<br><button class="copy-btn" onclick="copiarMensagem('ob-filho',this)" style="margin-top:8px;position:static">📋 Copiar</button></div>
+        </div>
+        <hr class="div" style="margin:8px 0">
+        <div class="obj-row">
+          <span class="obj-q">🚨 Golpe / Não funciona</span>
+          <div class="obj-a" id="ob-golpe">Entendo totalmente! É muito importante questionar isso. Por isso o <b>pagamento é só na entrega</b> — você não paga nada agora, nem faz transferência. O produto chega na sua porta, você vê na sua mão e só então decide pagar. É <b>zero risco</b> pra você. Impossível ser golpe com esse modelo! 😊<br><button class="copy-btn" onclick="copiarMensagem('ob-golpe',this)" style="margin-top:8px;position:static">📋 Copiar</button></div>
+        </div>
+        <hr class="div" style="margin:8px 0">
+        <div class="obj-row">
+          <span class="obj-q">📦 Quanto tempo pra chegar?</span>
+          <div class="obj-a" id="ob-prazo">O prazo de entrega varia de acordo com a sua região, mas em geral é de <b>3 a 8 dias úteis</b> após o despacho. Você recebe o código de rastreamento assim que sair e pode acompanhar tudo em tempo real! 😊<br><button class="copy-btn" onclick="copiarMensagem('ob-prazo',this)" style="margin-top:8px;position:static">📋 Copiar</button></div>
+        </div>
+        <hr class="div" style="margin:8px 0">
+        <div class="obj-row">
+          <span class="obj-q">💊 Tem contraindicação?</span>
+          <div class="obj-a" id="ob-contra">O Ali Flex é um suplemento natural e seguro, <b>sem glúten</b> e sem substâncias proibidas. É indicado para adultos acima de 18 anos. Como qualquer suplemento, quem tem condições de saúde específicas, gestantes ou quem toma medicamentos de uso contínuo deve consultar um médico antes. Mas pra maioria das pessoas, pode usar com total tranquilidade! ✅<br><button class="copy-btn" onclick="copiarMensagem('ob-contra',this)" style="margin-top:8px;position:static">📋 Copiar</button></div>
+        </div>
+        <hr class="div" style="margin:8px 0">
+        <div class="obj-row">
+          <span class="obj-q">🤔 Tem resultado mesmo?</span>
+          <div class="obj-a" id="ob-resultado">Tem sim! O resultado varia de pessoa para pessoa, mas a maioria das nossas clientes começa a sentir a diferença entre a <b>2ª e 4ª semana</b> de uso. Para resultados mais duradouros, o ideal é usar por pelo menos <b>3 meses consecutivos</b>. E não tem risco: você só paga quando o produto estiver na sua mão! 💚<br><button class="copy-btn" onclick="copiarMensagem('ob-resultado',this)" style="margin-top:8px;position:static">📋 Copiar</button></div>
+        </div>
+        <hr class="div" style="margin:8px 0">
+        <div class="obj-row">
+          <span class="obj-q">🏥 Pode tomar com remédio?</span>
+          <div class="obj-a" id="ob-remedio">Ótima pergunta! O Ali Flex é um suplemento alimentar natural, não um medicamento. Na maioria dos casos não há interação. Mas como precaução, <b>sempre recomendo conversar com o médico</b> — especialmente quem usa anticoagulantes ou medicamentos contínuos. O médico vai confirmar que pode usar sem problema! 🩺<br><button class="copy-btn" onclick="copiarMensagem('ob-remedio',this)" style="margin-top:8px;position:static">📋 Copiar</button></div>
+        </div>
+        <hr class="div" style="margin:8px 0">
+        <div class="obj-row">
+          <span class="obj-q">📲 Como funciona o pedido?</span>
+          <div class="obj-a" id="ob-como">É bem simples! Você me passa os dados (nome, CPF e endereço), eu registro o pedido, o produto é despachado e chega na sua porta em até 8 dias úteis. <b>O pagamento é feito só na entrega</b> — você pega o produto na mão e paga pro entregador. Frete grátis e sem burocracia! 📦😊<br><button class="copy-btn" onclick="copiarMensagem('ob-como',this)" style="margin-top:8px;position:static">📋 Copiar</button></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ─── ÁUDIOS ─── -->
+    <div id="audios" class="section">
+      <div class="page-header">
+        <div class="page-title">Roteiros para Áudio</div>
+        <div class="page-desc">Grave com calma. Pausas em <span style="color:var(--cyan)">azul</span>. Destaques em <span style="color:var(--gold)">dourado</span>.</div>
+      </div>
+
+      <!-- Áudio 1 — Abertura -->
+      <div class="audio-card" id="ac1">
+        <div class="audio-head" onclick="toggleAudio('ac1')">
+          <div class="audio-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a3 3 0 013 3v7a3 3 0 01-6 0V5a3 3 0 013-3z"/><path d="M19 10v1a7 7 0 01-14 0v-1"/></svg></div>
+          <div class="audio-info"><div class="audio-title">Parte 01 — Abertura e Interesse</div><div class="audio-sub">Para enviar quando o cliente entrar em contato</div></div>
+          <span class="badge badge-blue" style="margin-right:8px">Parte 1</span>
+          <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+        </div>
+        <div class="audio-body">
+          <p style="font-size:12px;color:var(--text-muted);margin:12px 0 0">Tom: caloroso, próximo, curioso</p>
+          <div class="script-mono" id="a1t">Oi! <span class="pau">[pausa]</span> Tudo bem com você?
+
+Aqui é a <span class="hl">Márcia</span>! <span class="pau">[pausa curta]</span>
+
+Vi que você demonstrou interesse no Ali Flex e fico muito feliz por isso, porque é um produto que tem <span class="hl">mudado a vida de muitas pessoas</span>. <span class="pau">[pausa]</span>
+
+Antes de te contar tudo, quero entender melhor a sua situação: <span class="pau">[pausa]</span> você está sentindo dores nas articulações, joelhos, quadril? <span class="pau">[pausa]</span> Tem dificuldade de se movimentar, especialmente de manhã? <span class="pau">[pausa curta]</span>
+
+Me conta um pouquinho o que você está sentindo que eu te ajudo! 😊</div>
+          <button class="copy-btn" onclick="copiarMensagem('a1t',this)" style="position:static;margin-top:10px">📋 Copiar roteiro</button>
+        </div>
+      </div>
+
+      <!-- Áudio 1B — Abertura alternativa -->
+      <div class="audio-card" id="ac1b">
+        <div class="audio-head" onclick="toggleAudio('ac1b')">
+          <div class="audio-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a3 3 0 013 3v7a3 3 0 01-6 0V5a3 3 0 013-3z"/><path d="M19 10v1a7 7 0 01-14 0v-1"/></svg></div>
+          <div class="audio-info"><div class="audio-title">Parte 01B — Abertura Empática</div><div class="audio-sub">Versão mais acolhedora e pessoal</div></div>
+          <span class="badge badge-blue" style="margin-right:8px">Parte 1B</span>
+          <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+        </div>
+        <div class="audio-body">
+          <p style="font-size:12px;color:var(--text-muted);margin:12px 0 0">Tom: afetuoso, paciente, acolhedor</p>
+          <div class="script-mono" id="a1bt">Oi! <span class="pau">[pausa]</span> Que bom receber o seu contato!
+
+Meu nome é <span class="hl">Márcia</span> e eu vou te atender pessoalmente hoje. <span class="pau">[pausa]</span>
+
+Sabe, eu gosto muito de entender a história de cada pessoa antes de falar sobre o produto. <span class="pau">[pausa]</span> Porque cada caso é único, né? <span class="pau">[pausa curta]</span>
+
+Então me conta: <span class="pau">[pausa]</span> o que está te incomodando mais? <span class="pau">[pausa]</span> É dor nas articulações, dificuldade de caminhar, rigidez quando acorda? <span class="pau">[pausa]</span>
+
+Pode falar à vontade que estou aqui pra te ajudar de verdade! 🙏</div>
+          <button class="copy-btn" onclick="copiarMensagem('a1bt',this)" style="position:static;margin-top:10px">📋 Copiar roteiro</button>
+        </div>
+      </div>
+
+      <!-- Áudio 2 — Produto -->
+      <div class="audio-card" id="ac2">
+        <div class="audio-head" onclick="toggleAudio('ac2')">
+          <div class="audio-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a3 3 0 013 3v7a3 3 0 01-6 0V5a3 3 0 013-3z"/><path d="M19 10v1a7 7 0 01-14 0v-1"/></svg></div>
+          <div class="audio-info"><div class="audio-title">Parte 02 — Apresentação do Produto</div><div class="audio-sub">Após ouvir o problema do cliente</div></div>
+          <span class="badge badge-green" style="margin-right:8px">Parte 2</span>
+          <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+        </div>
+        <div class="audio-body">
+          <p style="font-size:12px;color:var(--text-muted);margin:12px 0 0">Tom: animado, informativo, confiante</p>
+          <div class="script-mono" id="a2t">Que bom que você me contou! <span class="pau">[pausa]</span> Porque o Ali Flex foi desenvolvido exatamente pra isso!
+
+É um <span class="hl">suplemento alimentar natural</span>, com ingredientes que agem de dentro pra fora nas articulações. <span class="pau">[pausa]</span>
+
+A fórmula tem <span class="hl">Cúrcuma</span>, que é um anti-inflamatório natural poderoso, <span class="pau">[pausa curta]</span> <span class="hl">Colágeno Tipo II</span>, que ajuda a regenerar as cartilagens, <span class="pau">[pausa curta]</span> <span class="hl">Condroitina</span>, que lubrifica as articulações, <span class="pau">[pausa curta]</span> <span class="hl">Magnésio</span>, que relaxa os músculos, <span class="pau">[pausa]</span> e mais dois ingredientes: o MSM e o PEA, que são incríveis para reduzir a dor e a rigidez articular. <span class="pau">[pausa]</span>
+
+Tudo isso num único produto, <span class="hl">sem glúten</span>, sem contra-indicações e aprovado pelas normas do Ministério da Saúde. <span class="pau">[pausa]</span>
+
+Incrível, né? 😊</div>
+          <button class="copy-btn" onclick="copiarMensagem('a2t',this)" style="position:static;margin-top:10px">📋 Copiar roteiro</button>
+        </div>
+      </div>
+
+      <!-- Áudio 2B — Composição detalhada -->
+      <div class="audio-card" id="ac2b">
+        <div class="audio-head" onclick="toggleAudio('ac2b')">
+          <div class="audio-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a3 3 0 013 3v7a3 3 0 01-6 0V5a3 3 0 013-3z"/><path d="M19 10v1a7 7 0 01-14 0v-1"/></svg></div>
+          <div class="audio-info"><div class="audio-title">Parte 02B — Explicando a Composição</div><div class="audio-sub">Quando o cliente quer saber mais sobre os ingredientes</div></div>
+          <span class="badge badge-purple" style="margin-right:8px">Composição</span>
+          <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+        </div>
+        <div class="audio-body">
+          <p style="font-size:12px;color:var(--text-muted);margin:12px 0 0">Tom: didático, tranquilo, detalhado</p>
+          <div class="script-mono" id="a2bt">Que ótimo que você quer entender melhor! <span class="pau">[pausa]</span> Vou te explicar cada ingrediente!
+
+A <span class="hl">Cúrcuma</span> é um anti-inflamatório natural que ajuda a reduzir o inchaço e a dor, tudo isso sem agredir o estômago. <span class="pau">[pausa]</span>
+
+O <span class="hl">Colágeno Tipo II</span> é o colágeno específico das cartilagens — ele ajuda a regenerar o desgaste e melhorar a mobilidade. <span class="pau">[pausa]</span>
+
+A <span class="hl">Condroitina</span> é como o "lubrificante" das articulações — mantém a cartilagem hidratada e saudável. <span class="pau">[pausa]</span>
+
+O <span class="hl">MSM</span> — que é o Metilsulfonilmetano — reduz a rigidez matinal e melhora a flexibilidade. <span class="pau">[pausa]</span>
+
+O <span class="hl">PEA</span> é um modulador natural da dor crônica — age no sistema nervoso pra reduzir a sensação de dor. <span class="pau">[pausa]</span>
+
+E o <span class="hl">Magnésio</span> relaxa a musculatura, reduz cãibras e ainda melhora o sono! <span class="pau">[pausa]</span>
+
+São seis ativos que juntos formam uma fórmula completa, natural e segura! ✅</div>
+          <button class="copy-btn" onclick="copiarMensagem('a2bt',this)" style="position:static;margin-top:10px">📋 Copiar roteiro</button>
+        </div>
+      </div>
+
+      <!-- Áudio 3 — Provas sociais -->
+      <div class="audio-card" id="ac3">
+        <div class="audio-head" onclick="toggleAudio('ac3')">
+          <div class="audio-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a3 3 0 013 3v7a3 3 0 01-6 0V5a3 3 0 013-3z"/><path d="M19 10v1a7 7 0 01-14 0v-1"/></svg></div>
+          <div class="audio-info"><div class="audio-title">Parte 03 — Provas Sociais</div><div class="audio-sub">Depoimentos e credibilidade</div></div>
+          <span class="badge badge-cyan" style="margin-right:8px">Parte 3</span>
+          <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+        </div>
+        <div class="audio-body">
+          <p style="font-size:12px;color:var(--text-muted);margin:12px 0 0">Tom: acolhedor, entusiasmado, empático</p>
+          <div class="script-mono" id="a3t">Vou te contar uma coisa que me deixa muito feliz no meu trabalho: <span class="pau">[pausa]</span> ver o retorno das clientes depois de umas semanas usando o Ali Flex. <span class="pau">[pausa]</span>
+
+Tem gente que volta me dizendo que conseguiu <span class="hl">dormir sem dor</span> pela primeira vez em anos. <span class="pau">[pausa curta]</span> Outras que voltaram a <span class="hl">caminhar no parque</span> com os netos. <span class="pau">[pausa]</span> Pessoas que pararam de tomar anti-inflamatório todo dia. <span class="pau">[pausa]</span>
+
+Vou te mandar aqui os depoimentos pra você ver. <span class="pau">[pausa curta]</span>
+
+E pode ficar tranquila quanto à procedência: o Ali Flex segue todas as normas da <span class="hl">ANVISA</span> como suplemento alimentar, conforme a RDC 240 de 2018. <span class="pau">[pausa]</span> Pode ser usado com total segurança! ✅</div>
+          <button class="copy-btn" onclick="copiarMensagem('a3t',this)" style="position:static;margin-top:10px">📋 Copiar roteiro</button>
+        </div>
+      </div>
+
+      <!-- Áudio 4 — Valores -->
+      <div class="audio-card" id="ac4">
+        <div class="audio-head" onclick="toggleAudio('ac4')">
+          <div class="audio-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a3 3 0 013 3v7a3 3 0 01-6 0V5a3 3 0 013-3z"/><path d="M19 10v1a7 7 0 01-14 0v-1"/></svg></div>
+          <div class="audio-info"><div class="audio-title">Parte 04 — Valores e Kits</div><div class="audio-sub">Apresentação dos planos de tratamento</div></div>
+          <span class="badge badge-gold" style="margin-right:8px">Parte 4</span>
+          <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+        </div>
+        <div class="audio-body">
+          <p style="font-size:12px;color:var(--text-muted);margin:12px 0 0">Tom: objetivo, empolgado, seguro</p>
+          <div class="script-mono" id="a4t">Então deixa eu te explicar certinho as opções! <span class="pau">[pausa]</span>
+
+O Ali Flex tem planos de tratamento de <span class="hl">1 a 6 meses</span>, com preços que cabem no bolso. <span class="pau">[pausa]</span>
+
+O de <span class="hl">1 mês</span> fica em R$197,00. <span class="pau">[pausa curta]</span>
+O de <span class="hl">2 meses</span>, R$247,00 — ou doze vezes de R$24,80 no cartão. <span class="pau">[pausa curta]</span>
+O de <span class="hl">3 meses</span> — que é o mais pedido — R$297,00, ou doze vezes de R$29,82. <span class="pau">[pausa curta]</span>
+O de <span class="hl">4 meses</span>, R$347,00. O de <span class="hl">5 meses</span>, R$397,00. E o de <span class="hl">6 meses</span>, R$447,00. <span class="pau">[pausa]</span>
+
+Todos com <span class="hl">frasco grátis</span> incluso! 🎁 <span class="pau">[pausa]</span>
+
+E o mais importante: você <span class="hl">só paga na entrega</span>. Não tem risco nenhum. O entregador chega na sua porta, você pega o produto nas mãos e aí efetua o pagamento. Simples assim! 🙏</div>
+          <button class="copy-btn" onclick="copiarMensagem('a4t',this)" style="position:static;margin-top:10px">📋 Copiar roteiro</button>
+        </div>
+      </div>
+
+      <!-- Áudio 5 — Confiança na entrega -->
+      <div class="audio-card" id="ac5">
+        <div class="audio-head" onclick="toggleAudio('ac5')">
+          <div class="audio-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a3 3 0 013 3v7a3 3 0 01-6 0V5a3 3 0 013-3z"/><path d="M19 10v1a7 7 0 01-14 0v-1"/></svg></div>
+          <div class="audio-info"><div class="audio-title">OBJ — Golpe / Não é confiável</div><div class="audio-sub">Contorno de desconfiança na entrega</div></div>
+          <span class="badge badge-red" style="margin-right:8px">Objeção</span>
+          <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+        </div>
+        <div class="audio-body">
+          <p style="font-size:12px;color:var(--text-muted);margin:12px 0 0">Tom: acolhedor, transparente, firme e seguro</p>
+          <div class="script-mono" id="a5t">Entendo completamente! <span class="pau">[pausa]</span> E é super saudável questionar isso. <span class="pau">[pausa]</span>
+
+Mas deixa eu te explicar por que o Ali Flex é diferente de tudo que você já viu. <span class="pau">[pausa]</span>
+
+Aqui, o pagamento é feito <span class="hl">somente na entrega</span>. <span class="pau">[pausa]</span> Isso significa que você <span class="hl">não paga nada agora</span>. Não faz pix. Não faz transferência. Não dá dados do cartão agora. <span class="pau">[pausa]</span>
+
+O produto sai daqui, vai rastreado pela transportadora, e quando o entregador chegar na <span class="hl">sua porta</span>, com o produto na mão, aí você paga. <span class="pau">[pausa]</span>
+
+Impossível ser golpe, porque você só paga quando tem o produto na mão! <span class="pau">[pausa]</span>
+
+Pode ficar tranquila! 🙏 Zero risco pra você! ✅</div>
+          <button class="copy-btn" onclick="copiarMensagem('a5t',this)" style="position:static;margin-top:10px">📋 Copiar roteiro</button>
+        </div>
+      </div>
+
+      <!-- Áudio 6 — Urgência -->
+      <div class="audio-card" id="ac6">
+        <div class="audio-head" onclick="toggleAudio('ac6')">
+          <div class="audio-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a3 3 0 013 3v7a3 3 0 01-6 0V5a3 3 0 013-3z"/><path d="M19 10v1a7 7 0 01-14 0v-1"/></svg></div>
+          <div class="audio-info"><div class="audio-title">OBJ — Vou ver depois</div><div class="audio-sub">Urgência e recuperação do cliente</div></div>
+          <span class="badge badge-orange" style="margin-right:8px">Follow-up</span>
+          <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+        </div>
+        <div class="audio-body">
+          <p style="font-size:12px;color:var(--text-muted);margin:12px 0 0">Tom: gentil, sem pressão, mas com urgência leve</p>
+          <div class="script-mono" id="a6t">Claro, sem pressão! <span class="pau">[pausa]</span> Fica à vontade pra pensar. 🌸
+
+Só quero te deixar uma informação importante: <span class="pau">[pausa]</span> o estoque do kit com o <span class="hl">frasco grátis</span> é bem limitado, e quando termina, a promoção encerra mesmo. <span class="pau">[pausa]</span>
+
+Não quero que você fique de fora por falta de aviso, sabe? <span class="pau">[pausa]</span>
+
+E pensa bem: são <span class="hl">menos de R$25 por mês</span> no cartão pra cuidar da sua saúde, ter mais mobilidade e menos dor. <span class="pau">[pausa]</span>
+
+Quando você decidir, é só me chamar que eu cuido de tudo com muito carinho! 💚</div>
+          <button class="copy-btn" onclick="copiarMensagem('a6t',this)" style="position:static;margin-top:10px">📋 Copiar roteiro</button>
+        </div>
+      </div>
+
+      <!-- Áudio 7 — Pós-venda -->
+      <div class="audio-card" id="ac7">
+        <div class="audio-head" onclick="toggleAudio('ac7')">
+          <div class="audio-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a3 3 0 013 3v7a3 3 0 01-6 0V5a3 3 0 013-3z"/><path d="M19 10v1a7 7 0 01-14 0v-1"/></svg></div>
+          <div class="audio-info"><div class="audio-title">Parte 05 — Pós-Venda e Acompanhamento</div><div class="audio-sub">Enviar após confirmação do pedido</div></div>
+          <span class="badge badge-cyan" style="margin-right:8px">Pós-venda</span>
+          <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+        </div>
+        <div class="audio-body">
+          <p style="font-size:12px;color:var(--text-muted);margin:12px 0 0">Tom: caloroso, animado, acolhedor</p>
+          <div class="script-mono" id="a7t">Que alegria! <span class="pau">[pausa]</span> Seu pedido tá confirmado e já vai ser separado com carinho pra você! 🎉
+
+Lembra: você <span class="hl">não paga nada agora</span>. <span class="pau">[pausa]</span> O pagamento é feito direto pro entregador quando o produto chegar na sua porta. <span class="pau">[pausa]</span>
+
+Quando sair pra entrega, eu te mando o <span class="hl">código de rastreamento</span> aqui mesmo, tá? <span class="pau">[pausa]</span>
+
+E qualquer dúvida que surgir — sobre o produto, sobre a entrega, sobre como tomar — pode me chamar aqui. <span class="pau">[pausa]</span>
+
+Torço muito pelo seu resultado! <span class="pau">[pausa]</span> Que o Ali Flex traga de volta a mobilidade e o conforto que você merece! 💚🌿</div>
+          <button class="copy-btn" onclick="copiarMensagem('a7t',this)" style="position:static;margin-top:10px">📋 Copiar roteiro</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ─── NOVO PEDIDO ─── -->
+    <div id="novo-pedido" class="section">
+      <div class="page-header">
+        <div class="page-title">Registrar Novo Pedido</div>
+        <div class="page-desc">Dados salvos automaticamente no Firebase em tempo real.</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Dados Pessoais</div>
+        <div class="form-grid">
+          <div class="form-group full"><label>Nome completo</label><input type="text" id="p-nome" placeholder="Nome do cliente"></div>
+          <div class="form-group"><label>CPF</label><input type="text" id="p-cpf" placeholder="000.000.000-00"></div>
+          <div class="form-group"><label>WhatsApp</label><input type="text" id="p-whats" placeholder="(00) 90000-0000"></div>
+        </div>
+        <div class="card-label" style="margin-top:18px">Endereço de Entrega</div>
+        <div class="form-grid">
+          <div class="form-group"><label>CEP</label><input type="text" id="p-cep" placeholder="00000-000"></div>
+          <div class="form-group"><label>Número</label><input type="text" id="p-num" placeholder="Ex: 142"></div>
+          <div class="form-group full"><label>Endereço</label><input type="text" id="p-end" placeholder="Rua, Avenida…"></div>
+          <div class="form-group"><label>Bairro</label><input type="text" id="p-bairro" placeholder="Bairro"></div>
+          <div class="form-group"><label>Cidade / Estado</label><input type="text" id="p-cidade" placeholder="Ex: São Paulo / SP"></div>
+        </div>
+        <div class="card-label" style="margin-top:18px">Kit e Pagamento</div>
+        <div class="form-grid">
+          <div class="form-group">
+            <label>Kit escolhido</label>
+            <select id="p-kit">
+              <option value="">Selecione…</option>
+              <option>1 mês — R$197,00</option>
+              <option>2 meses — R$247,00</option>
+              <option>3 meses — R$297,00 ⭐</option>
+              <option>4 meses — R$347,00</option>
+              <option>5 meses — R$397,00</option>
+              <option>6 meses — R$447,00</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Forma de pagamento</label>
+            <select id="p-pgto">
+              <option value="">Selecione…</option>
+              <option>À vista (na entrega)</option>
+              <option>Cartão 12x (na entrega)</option>
+            </select>
+          </div>
+        </div>
+        <div class="btn-row">
+          <button class="btn btn-primary" onclick="window._registrarPedido()">💾 Salvar Pedido</button>
+          <button class="btn btn-ghost"   onclick="limparForm()">Limpar</button>
+        </div>
+      </div>
+      <div class="card" style="margin-top:8px">
+        <div class="card-label">Checklist de Atendimento</div>
+        <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px">Marque cada etapa — sincronizado em tempo real.</p>
+        <ul class="check-list" id="checklist-items"></ul>
+      </div>
+    </div>
+
+    <!-- ─── PEDIDOS ─── -->
+    <div id="pedidos" class="section">
+      <div class="page-header">
+        <div class="page-title">Pedidos Registrados</div>
+        <div class="page-desc">Atualizado em tempo real. Todos os usuários veem os mesmos dados.</div>
+      </div>
+      <div id="lista-pedidos"><div class="empty-state">Carregando pedidos…</div></div>
+    </div>
+
+    <!-- ─── NOTAS ─── -->
+    <div id="notas" class="section">
+      <div class="page-header">
+        <div class="page-title">Bloco de Notas</div>
+        <div class="page-desc">Salvo automaticamente. Acesse de qualquer dispositivo.</div>
+      </div>
+      <div class="card"><div class="card-label">Anotações Gerais</div><textarea data-nota-key="geral" rows="6" placeholder="Anote aqui informações importantes, dicas, lembretes…" oninput="window._salvarNota('geral', this.value)"></textarea></div>
+      <div class="card"><div class="card-label">Clientes em Negociação</div><textarea data-nota-key="negociacao" rows="5" placeholder="Nomes e status dos clientes que estão pensando…" oninput="window._salvarNota('negociacao', this.value)"></textarea></div>
+      <div class="card"><div class="card-label">Pendências / Follow-up</div><textarea data-nota-key="followup" rows="5" placeholder="Clientes para dar retorno…" oninput="window._salvarNota('followup', this.value)"></textarea></div>
+      <div class="card"><div class="card-label">Metas do Dia</div><textarea data-nota-key="metas" rows="4" placeholder="Meta de hoje, pedidos desejados, faturamento…" oninput="window._salvarNota('metas', this.value)"></textarea></div>
+    </div>
+
+    <!-- ─── COMPOSIÇÃO ─── -->
+    <div id="composicao" class="section">
+      <div class="page-header">
+        <div class="page-title">Composição Nutricional</div>
+        <div class="page-desc">Ingredientes do Ali Flex por cápsula — use para responder dúvidas técnicas dos clientes.</div>
+      </div>
+      <div class="card">
+        <div class="ingr-grid">
+          <div class="ingr-card"><div class="ingr-nome">🌿 Cúrcuma</div><div class="ingr-dose">100 mg</div><div class="ingr-desc">Anti-inflamatório natural, reduz inchaço e dor articular</div></div>
+          <div class="ingr-card"><div class="ingr-nome">🦴 Condroitina</div><div class="ingr-dose">100 mg</div><div class="ingr-desc">Lubrifica articulações e retarda degeneração da cartilagem</div></div>
+          <div class="ingr-card"><div class="ingr-nome">⚡ PEA</div><div class="ingr-dose">0,5 mg</div><div class="ingr-desc">Palmitoiletanolamida — modulador potente da dor crônica</div></div>
+          <div class="ingr-card"><div class="ingr-nome">🔬 MSM</div><div class="ingr-dose">50 mg</div><div class="ingr-desc">Metilsulfonilmetano — reduz rigidez e melhora flexibilidade</div></div>
+          <div class="ingr-card"><div class="ingr-nome">💊 Colágeno II</div><div class="ingr-dose">2 mg</div><div class="ingr-desc">Regenera cartilagens e melhora mobilidade articular</div></div>
+          <div class="ingr-card"><div class="ingr-nome">💪 Magnésio</div><div class="ingr-dose">100 mg</div><div class="ingr-desc">Relaxa músculos, reduz cãibras e melhora o sono</div></div>
+        </div>
+        <div style="margin-top:16px;padding:14px;background:var(--navy-card2);border-radius:var(--radius-sm);font-size:13px;color:var(--text-muted);border:1px solid var(--navy-border)">
+          <b style="color:var(--text)">Informação importante:</b> Não contém quantidades significativas de carboidratos, açúcares totais, proteínas, gorduras totais, gorduras saturadas, gorduras trans, fibra alimentar e sódio. <b style="color:var(--green)">Sem glúten.</b>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-label">Como Explicar a Composição — Script Rápido</div>
+        <div class="bubble purple-border" id="comp-script">O Ali Flex tem 6 ingredientes naturais que trabalham juntos:
+
+🌿 <b>Cúrcuma (100mg)</b> — combate a inflamação naturalmente
+🦴 <b>Colágeno Tipo II (2mg)</b> — regenera as cartilagens
+💎 <b>Condroitina (100mg)</b> — lubrifica as articulações
+🔬 <b>MSM (50mg)</b> — reduz rigidez e melhora flexibilidade
+⚡ <b>PEA (0,5mg)</b> — modulador natural da dor crônica
+💪 <b>Magnésio (100mg)</b> — relaxa músculos e melhora o sono
+
+Tudo natural, sem glúten, 60 cápsulas por frasco (30 dias de tratamento). ✅</div>
+        <button class="copy-btn" onclick="copiarMensagem('comp-script',this)">📋 Copiar</button>
+      </div>
+      <div class="card">
+        <div class="card-label">Modo de Uso</div>
+        <div class="bubble">
+          Tomar <b>2 cápsulas ao dia</b>, preferencialmente com as refeições. <b>60 cápsulas por frasco</b> = 30 dias de tratamento. Para melhores resultados, usar por pelo menos <b>3 meses consecutivos</b>.
+        </div>
+        <div class="bubble" style="margin-top:8px">
+          <b>Frasco:</b> 60 cápsulas de 500mg | <b>Formato:</b> Cápsulas | <b>Sem glúten:</b> ✅ | <b>Uso:</b> Adultos acima de 18 anos
+        </div>
+      </div>
+    </div>
+
+    <!-- ─── ANVISA ─── -->
+    <div id="anvisa" class="section">
+      <div class="page-header">
+        <div class="page-title">ANVISA e Segurança Legal</div>
+        <div class="page-desc">Informações oficiais para responder clientes com segurança e confiança.</div>
+      </div>
+      <div class="anvisa-box">
+        <div class="anvisa-title">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          Suplemento Isento de Registro ANVISA
+        </div>
+        <div class="anvisa-text">
+          De acordo com a <strong>RDC nº 240/2018</strong> e <strong>RDC nº 243/2018</strong> da ANVISA, suplementos alimentares compostos por ingredientes autorizados estão <strong>isentos de registro sanitário</strong>, desde que não contenham substâncias de uso restrito e não façam alegações terapêuticas proibidas.<br><br>
+          O Ali Flex se enquadra nessa categoria e <strong>pode ser comercializado e consumido com segurança</strong>, seguindo todas as normas do Ministério da Saúde.
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-label">Como explicar para o cliente</div>
+        <div class="bubble" id="anvisa-msg">O Ali Flex é um <b>suplemento alimentar natural</b>, registrado dentro das normas da ANVISA (RDC nº 240/2018). Por ser composto apenas de ingredientes naturais autorizados, ele é <b>isento de registro sanitário</b> — isso é totalmente legal e regulamentado pelo Ministério da Saúde. ✅
+
+Pode ser consumido com total segurança! Em caso de dúvidas ou condições de saúde específicas, a orientação de um profissional de saúde é sempre recomendada. 🙏</div>
+        <button class="copy-btn" onclick="copiarMensagem('anvisa-msg',this)">📋 Copiar</button>
+      </div>
+      <div class="card">
+        <div class="card-label">Resumo Legal</div>
+        <ul style="list-style:none;padding:0">
+          <li style="display:flex;gap:10px;padding:10px 0;border-bottom:1px solid var(--navy-border);font-size:13px;color:var(--text)"><span style="color:var(--green);font-size:16px">✓</span> Pode ser comercializado sem registro, conforme RDC nº 240/2018</li>
+          <li style="display:flex;gap:10px;padding:10px 0;border-bottom:1px solid var(--navy-border);font-size:13px;color:var(--text)"><span style="color:var(--green);font-size:16px">✓</span> Pode ser consumido sem riscos, seguindo as condições de uso</li>
+          <li style="display:flex;gap:10px;padding:10px 0;border-bottom:1px solid var(--navy-border);font-size:13px;color:var(--text)"><span style="color:var(--green);font-size:16px">✓</span> Ingredientes (Cúrcuma, Magnésio, Colágeno II…) são todos autorizados pela ANVISA</li>
+          <li style="display:flex;gap:10px;padding:10px 0;font-size:13px;color:var(--text)"><span style="color:var(--gold);font-size:16px">⚠</span> Não fazer alegações de "tratar" ou "curar" doenças — apenas benefícios nutricionais</li>
+        </ul>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast-msg"></div>
+
+<script>
+// ─── Navegação ───
+function showTab(id) {
+  document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  const el = document.getElementById(id);
+  if (el) el.classList.add('active');
+  document.querySelectorAll('.nav-item').forEach(n => {
+    if (n.getAttribute('onclick') && n.getAttribute('onclick').includes(`'${id}'`)) n.classList.add('active');
+  });
+  document.querySelector('.sidebar')?.classList.remove('open');
+}
+
+// ─── Tabs de variações de script ───
+function switchTab(tabEl, group, idx) {
+  // Desativa todas as tabs do grupo
+  tabEl.closest('.card').querySelectorAll('.script-tab').forEach(t => t.classList.remove('active'));
+  tabEl.classList.add('active');
+  // Esconde todas as variantes do grupo
+  tabEl.closest('.card').querySelectorAll(`.script-variant[data-group="${group}"]`).forEach(v => v.classList.remove('active'));
+  // Ativa a variante correta
+  const target = tabEl.closest('.card').querySelector(`.script-variant[data-group="${group}"][data-idx="${idx}"]`);
+  if (target) target.classList.add('active');
+}
+
+// ─── Copiar texto ───
+function copiarMensagem(id, btn) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  let text = el.innerText || el.textContent;
+  text = text.replace(/📋 Copiar roteiro|📋 Copiar resumo|📋 Copiar/g, '').trim();
+  navigator.clipboard.writeText(text).then(() => {
+    if (btn) {
+      const orig = btn.textContent;
+      btn.textContent = '✅ Copiado!';
+      btn.classList.add('success');
+      setTimeout(() => { btn.textContent = orig; btn.classList.remove('success'); }, 2200);
+    }
+    mostrarToast('Copiado! ✓', 'green');
+  }).catch(() => mostrarToast('Erro ao copiar.', 'red'));
+}
+
+// ─── Toast ───
+function mostrarToast(msg, tipo) {
+  const t = document.getElementById('toast-msg');
+  t.textContent = msg;
+  t.className = `toast ${tipo}`;
+  t.style.display = 'block';
+  setTimeout(() => { t.style.display = 'none'; }, 2500);
+}
+window.mostrarToast = mostrarToast;
+
+// ─── Accordion áudio ───
+function toggleAudio(id) {
+  document.getElementById(id)?.classList.toggle('open');
+}
+
+// ─── Limpar form ───
+function limparForm() {
+  ['p-nome','p-cpf','p-whats','p-cep','p-end','p-num','p-bairro','p-cidade'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = '';
+  });
+  const kit  = document.getElementById('p-kit');
+  const pgto = document.getElementById('p-pgto');
+  if (kit)  kit.value = '';
+  if (pgto) pgto.value = '';
+}
+
+// ─── Stats dashboard ───
+function atualizarStats(pedidos) {
+  document.getElementById('stat-total').textContent = pedidos.length;
+  let receita = 0;
+  pedidos.forEach(p => { const m = (p.kit || '').match(/R\$(\d+)/); if (m) receita += parseInt(m[1]); });
+  document.getElementById('stat-receita').textContent = receita > 0 ? `R$${receita.toLocaleString('pt-BR')}` : '—';
+  const hoje = new Date().toDateString();
+  const qtHoje = pedidos.filter(p => p.criadoEm && new Date(p.criadoEm).toDateString() === hoje).length;
+  document.getElementById('stat-hoje').textContent = qtHoje;
+  const sorted = [...pedidos].sort((a,b) => new Date(b.criadoEm||0) - new Date(a.criadoEm||0));
+  const dashList = document.getElementById('dash-pedidos-list');
+  if (dashList) {
+    if (sorted.length === 0) {
+      dashList.innerHTML = '<div class="empty-state" style="padding:16px 0">Nenhum pedido ainda. Que tal começar agora? 😊</div>';
+    } else {
+      dashList.innerHTML = sorted.slice(0,3).map(p => `
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--navy-border)">
+          <span style="font-size:14px;font-weight:500;color:var(--text)">${p.nome||'—'}</span>
+          <span class="kit-badge">${p.kit||'—'}</span>
+        </div>
+      `).join('') + (sorted.length > 3 ? `<div style="font-size:12px;color:var(--text-dim);padding-top:10px">+${sorted.length-3} pedidos anteriores <a href="#" onclick="showTab('pedidos');return false" style="color:var(--blue-light)">Ver todos →</a></div>` : '');
+    }
+  }
+}
+
+window.renderPedidos = function() {};
+
+const observer = new MutationObserver(() => {
+  try {
+    const cache = localStorage.getItem('alivflex_pedidos_cache');
+    if (cache) atualizarStats(JSON.parse(cache));
+  } catch(e) {}
+});
+document.addEventListener('DOMContentLoaded', () => {
+  const lista = document.getElementById('lista-pedidos');
+  if (lista) observer.observe(lista, { childList: true, subtree: true });
+  atualizarStats([]);
+});
+</script>
+
+</body>
+</html>
